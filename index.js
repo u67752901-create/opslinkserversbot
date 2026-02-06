@@ -42,23 +42,30 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const lastMemberCounts = new Map();
 const lastUpdateTime = new Map();
 
+function logUpdate(serverName, oldCount, newCount) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] Updated "${serverName}" members: ${oldCount} → ${newCount}`);
+}
+
 async function updateServerMembers(guild) {
   try {
     const now = Date.now();
     if (lastUpdateTime.get(guild.id) && now - lastUpdateTime.get(guild.id) < UPDATE_INTERVAL) return;
 
     const memberCount = guild.memberCount;
-    const previousCount = lastMemberCounts.get(guild.id);
+    const previousCount = lastMemberCounts.get(guild.id) || 0;
     if (previousCount === memberCount) return;
 
     // Update Mongo directly (only existing servers)
     const server = await Server.findOne({ discordServerId: guild.id });
     if (!server) return;
 
+    const oldCount = server.members || 0;
     server.members = memberCount;
     await server.save();
 
-    console.log(`Updated ${guild.name} members: ${memberCount}`);
+    logUpdate(server.name, oldCount, memberCount);
+
     lastMemberCounts.set(guild.id, memberCount);
     lastUpdateTime.set(guild.id, now);
   } catch (err) {
