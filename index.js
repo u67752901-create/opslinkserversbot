@@ -1,94 +1,91 @@
+// index.js
+import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
-import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-dotenv.config();
+import fetch from 'node-fetch';
+import express from 'express';
 
-// -----------------
-// Discord client
-// -----------------
+const app = express();
+app.use(express.json());
+
+// ============================
+// Config
+// ============================
+const TOKEN = process.env.BOT_TOKEN; // your Discord bot token
+const API_URL = process.env.API_URL; // your website URL e.g., https://your-site.onrender.com
+const PORT = process.env.PORT || 3000; // Render requires PORT
+
+const UPDATE_INTERVAL = 2 * 60 * 1000; // 2 minutes per server minimum
+
+// ============================
+// Discord Client
+// ============================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers
-    ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
-// -----------------
-// MongoDB setup
-// -----------------
-mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
+// Keep track of last member count per server
+const lastMemberCounts = new Map();
+const lastUpdateTime = new Map();
 
-const serverSchema = new mongoose.Schema({
-    discordServerId: String,
-    members: Number
-}, { collection: 'servers' }); // make sure this matches your existing collection
-
-const Server = mongoose.model('Server', serverSchema);
-
-// -----------------
-// Helper: update members count
-// -----------------
+// Function to update a server's member count
 async function updateServerMembers(guild) {
-    try {
-        const serverDoc = await Server.findOne({ discordServerId: guild.id });
-        if (!serverDoc) return; // skip if server not in MongoDB
+  try {
+    const now = Date.now();
 
-        // Use guild.memberCount (fast) instead of fetching all members
-        serverDoc.members = guild.memberCount;
-        await serverDoc.save();
-
-        console.log(`Updated ${guild.name}: ${guild.memberCount} members`);
-    } catch (err) {
-        console.error(`Failed to update ${guild.name}:`, err.message);
+    // Only update if enough time has passed
+    if (lastUpdateTime.get(guild.id) && now - lastUpdateTime.get(guild.id) < UPDATE_INTERVAL) {
+      return;
     }
+
+    const memberCount = guild.memberCount;
+    const previousCount = lastMemberCounts.get(guild.id);
+
+    // Only update if member count changed
+    if (previousCount === memberCount) return;
+
+    const res = await fetch(`${API_URL}/servers/${guild.id}/updateMembers`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ members: memberCount })
+    });
+
+    if (!res.ok) {
+      console.error(`Failed to update ${guild.name}:`, await res.text());
+      return;
+    }
+
+    console.log(`Updated ${guild.name} members: ${memberCount}`);
+    lastMemberCounts.set(guild.id, memberCount);
+    lastUpdateTime.set(guild.id, now);
+  } catch (err) {
+    console.error('Error updating members:', err);
+  }
 }
 
-// -----------------
-// Bot ready
-// -----------------
-client.once('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}`);
+// Function to loop through all guilds
+function updateAllServers() {
+  client.guilds.cache.forEach(updateServerMembers);
+}
 
-    // Update all existing servers on startup
-    client.guilds.cache.forEach(updateServerMembers);
+// When the bot is ready
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  // Initial update on startup
+  updateAllServers();
+  // Interval to check servers every minute
+  setInterval(updateAllServers, 60 * 1000);
 });
 
-// -----------------
-// Live updates
-// -----------------
-client.on('guildMemberAdd', async member => {
-    try {
-        const serverDoc = await Server.findOne({ discordServerId: member.guild.id });
-        if (!serverDoc) return;
+// Log in to Discord
+client.login(TOKEN);
 
-        serverDoc.members = (serverDoc.members || 0) + 1;
-        await serverDoc.save();
-
-        console.log(`Member joined ${member.guild.name}, total: ${serverDoc.members}`);
-    } catch (err) {
-        console.error(err);
-    }
+// ============================
+// Express server (Render requirement)
+// ============================
+app.get('/', (req, res) => {
+  res.send('Bot is running!');
 });
 
-client.on('guildMemberRemove', async member => {
-    try {
-        const serverDoc = await Server.findOne({ discordServerId: member.guild.id });
-        if (!serverDoc) return;
-
-        serverDoc.members = Math.max((serverDoc.members || 1) - 1, 0);
-        await serverDoc.save();
-
-        console.log(`Member left ${member.guild.name}, total: ${serverDoc.members}`);
-    } catch (err) {
-        console.error(err);
-    }
+app.listen(PORT, () => {
+  console.log(`Express server listening on port ${PORT}`);
 });
-
-// -----------------
-// Login
-// -----------------
-client.login(process.env.DISCORD_TOKEN);
